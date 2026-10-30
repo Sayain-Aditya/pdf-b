@@ -17,8 +17,9 @@ import pytesseract
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from PIL import Image
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from app.auth import router as auth_router, get_current_admin
 
 load_dotenv()
 
@@ -47,11 +48,17 @@ app = FastAPI(
     version="0.2.0",
 )
 
+app.include_router(auth_router)
+
 
 @app.on_event("startup")
 async def startup():
     global _mongo_client
-    _mongo_client = AsyncIOMotorClient(MONGODB_URI)
+    _mongo_client = AsyncIOMotorClient(MONGODB_URI, tz_aware=True)
+    app.state.db = _mongo_client[MONGODB_DB]
+    await app.state.db["sessions"].create_index("expires_at", expireAfterSeconds=0)
+    await app.state.db["users"].create_index("email", unique=True)
+    await app.state.db["sessions"].create_index("token_hash", unique=True)
 
 
 @app.on_event("shutdown")
@@ -63,7 +70,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_URL],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -438,7 +445,7 @@ def health():
 
 
 @app.get("/reports")
-async def list_reports(skip: int = 0, limit: int = 50):
+async def list_reports(skip: int = 0, limit: int = 50, admin=Depends(get_current_admin)):
     cursor = get_db()["reports"].find(
         {},
         {
@@ -457,7 +464,7 @@ async def list_reports(skip: int = 0, limit: int = 50):
 
 
 @app.get("/reports/{report_id}")
-async def get_report(report_id: str):
+async def get_report(report_id: str, admin=Depends(get_current_admin)):
     from bson import ObjectId
     try:
         oid = ObjectId(report_id)
@@ -474,6 +481,7 @@ async def get_report(report_id: str):
 async def compare_pdfs(
     pdf1: UploadFile = File(..., description="Supplier invoice PDF"),
     pdf2: UploadFile = File(..., description="Customer invoice PDF"),
+    admin=Depends(get_current_admin),
 ):
     supplier_data = await read_pdf(pdf1)
     customer_data = await read_pdf(pdf2)

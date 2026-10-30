@@ -6,3 +6,4 @@ pytesseract
 Pillow
 motor
 python-dotenv
+argon2-cffi
